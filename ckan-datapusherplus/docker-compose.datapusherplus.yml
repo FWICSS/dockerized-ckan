@@ -1,0 +1,133 @@
+version: "3"
+
+
+volumes:
+  ckan_storage:
+  pg_data:
+  solr_data:
+
+services:
+
+  nginx:
+    container_name: ${NGINX_CONTAINER_NAME}
+    build:
+      context: nginx/
+      dockerfile: Dockerfile
+    networks:
+      - webnet
+      - ckannet
+    depends_on:
+      ckan:
+        condition: service_healthy
+    ports:
+      - "0.0.0.0:${NGINX_SSLPORT_HOST}:${NGINX_SSLPORT}"
+
+  ckan:
+    container_name: ${CKAN_CONTAINER_NAME}
+    build:
+      context: ckan/
+      dockerfile: Dockerfile
+      args:
+        - TZ=${TZ}
+    networks:
+      - ckannet
+      - dbnet
+      - solrnet
+      - redisnet
+    env_file:
+      - .env.datapusherplus
+    depends_on:
+      db:
+        condition: service_healthy
+      solr:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ckan_storage:/var/lib/ckan
+      - ./src:/srv/app/src_extensions
+    restart: unless-stopped
+    healthcheck:
+      test: [ "CMD", "wget", "-qO", "/dev/null", "http://localhost:5000" ]
+
+
+
+  datapusher-plus:
+    container_name: datapusher-plus
+    build:
+      context: datapusher-plus/
+      dockerfile: Dockerfile
+    links:
+      - ckan
+    ports:
+      - "8800:8800"
+    networks:
+          - ckannet
+          - dbnet
+    depends_on:
+      db:
+          condition: service_healthy
+    environment:
+      - CKAN_DB_USER=${CKAN_DB_USER}
+      - CKAN_DB_PASSWORD=${CKAN_DB_PASSWORD}
+      - CKAN_DB=${CKAN_DB}
+      - DATASTORE_DB=${DATASTORE_DB}
+      - DATAPUSHER_DB_USER=datapusheruser
+      - DATAPUSHER_DB_PASSWORD=datapusherpassword
+      - DATAPUSHER_DB_HOST=db
+      - DATAPUSHER_DB_NAME=datapusherdb
+    env_file:
+      - ./datapusher-plus/.env
+
+
+  db:
+    container_name: ${POSTGRESQL_CONTAINER_NAME}
+    build:
+      context: postgresql/
+    networks:
+      - dbnet
+    environment:
+      - POSTGRES_USER
+      - POSTGRES_PASSWORD
+      - POSTGRES_DB
+      - CKAN_DB_USER
+      - CKAN_DB_PASSWORD
+      - CKAN_DB
+      - DATASTORE_READONLY_USER
+      - DATASTORE_READONLY_PASSWORD
+      - DATASTORE_DB
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    restart: unless-stopped
+    healthcheck:
+      test: [ "CMD", "pg_isready", "-U", "${POSTGRES_USER}", "-d", "${POSTGRES_DB}" ]
+
+  solr:
+    container_name: ${SOLR_CONTAINER_NAME}
+    networks:
+      - solrnet
+    image: ckan/ckan-solr:${SOLR_IMAGE_VERSION}
+    volumes:
+      - solr_data:/var/solr
+    restart: unless-stopped
+    healthcheck:
+      test: [ "CMD", "wget", "-qO", "/dev/null", "http://localhost:8983/solr/" ]
+
+  redis:
+    container_name: ${REDIS_CONTAINER_NAME}
+    image: redis:${REDIS_VERSION}
+    networks:
+      - redisnet
+    restart: unless-stopped
+    healthcheck:
+      test: [ "CMD", "redis-cli", "-e", "QUIT" ]
+
+networks:
+  webnet:
+  ckannet:
+  solrnet:
+    internal: true
+  dbnet:
+    internal: true
+  redisnet:
+    internal: true
